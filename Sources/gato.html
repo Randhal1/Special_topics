@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Time-Dependent Schrödinger Equation in a Box</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            line-height: 1.6;
+            margin: 20px;
+        }
+        h1, h2 {
+            color: navy;
+        }
+        p {
+            margin-bottom: 1em;
+        }
+        .equation {
+            display: block;
+            margin: 1em 0;
+            padding: 0.5em;
+            border: 1px solid #ccc;
+            background-color: #f9f9f9;
+        }
+        .condition {
+            margin-left: 2em;
+            margin-bottom: 0.5em;
+        }
+        .solution {
+            background-color: #e6f7ff;
+            padding: 1em;
+            border: 1px solid #add8e6;
+            margin-top: 1em;
+        }
+    </style>
+    <script>
+        MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']]
+            },
+            svg: {
+                fontCache: 'global'
+            }
+        };
+    </script>
+    <script type="text/javascript" id="MathJax-script" async
+        src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js">
+    </script>
+</head>
+<body>
+
+    <h1>3D Time-Dependent Schrödinger Equation for a Particle in a Box</h1>
+
+    <h2>Problem Statement:</h2>
+
+    <p>Consider a particle of mass $m$ confined within a cubic box of side length $L$ ($0 \le x, y, z \le L$) with an infinite potential at the boundaries and zero potential inside. The time evolution of the particle's wave function $\Psi(x, y, z, t)$ is governed by the 3D time-dependent Schrödinger equation:</p>
+
+    <div class="equation">
+        $i \hbar \frac{\partial \Psi}{\partial t} = -\frac{\hbar^2}{2m} \nabla^2 \Psi$
+    </div>
+
+    <p>with the following boundary conditions:</p>
+    <ul style="list-style-type: none; padding-left: 0;">
+        <li class="condition">$\Psi = 0$ at $x = 0, L$</li>
+        <li class="condition">$\Psi = 0$ at $y = 0, L$</li>
+        <li class="condition">$\Psi = 0$ at $z = 0, L$</li>
+    </ul>
+
+    <p>and the initial condition at $t = 0$:</p>
+    <div class="equation">
+        $\Psi(x, y, z, 0) = A' \sin\left(\frac{\pi x}{L}\right) \sin\left(\frac{\pi y}{L}\right) \sin\left(\frac{\pi z}{L}\right) + B' \sin\left(\frac{2\pi x}{L}\right) \sin\left(\frac{\pi y}{L}\right) \sin\left(\frac{\pi z}{L}\right)$
+    </div>
+
+    <p>where $A'$ and $B'$ are normalization constants.</p>
+
+    <h2>Solution:</h2>
+
+    <div class="solution">
+        <p>The solution to this problem is given by the superposition of two stationary states that match the initial condition:</p>
+        <div class="equation">
+            $\Psi(x, y, z, t) = A' \sin\left(\frac{\pi x}{L}\right) \sin\left(\frac{\pi y}{L}\right) \sin\left(\frac{\pi z}{L}\right) e^{-i E_{1, 1, 1} t / \hbar} + B' \sin\left(\frac{2\pi x}{L}\right) \sin\left(\frac{\pi y}{L}\right) \sin\left(\frac{\pi z}{L}\right) e^{-i E_{2, 1, 1} t / \hbar}$
+        </div>
+        <p>where the energy eigenvalues are:</p>
+        <div class="equation">
+            $E_{n_x, n_y, n_z} = \frac{\hbar^2 \pi^2}{2m L^2} (n_x^2 + n_y^2 + n_z^2)$
+        </div>
+        <p>Specifically, for the two terms in the solution:</p>
+        <div class="equation">
+            $E_{1, 1, 1} = \frac{3 \hbar^2 \pi^2}{2m L^2}$
+        </div>
+        <div class="equation">
+            $E_{2, 1, 1} = \frac{6 \hbar^2 \pi^2}{2m L^2}$
+        </div>
+        <p>This solution satisfies the Schrödinger equation, the boundary conditions (being zero at the walls of the box due to the sine functions), and the initial condition at $t = 0$ (where the exponential terms become unity).</p>
+    </div>
+
+</body>
+</html>
