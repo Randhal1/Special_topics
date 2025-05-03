@@ -100,146 +100,117 @@ class MLP(nn.Module):
         self.model.apply(self.init_normal)
     
 
-# Create custom dataset Class 
-class CustomDataset(Dataset):
-    def __init__(self, samples):
-        """ Initialize CustomDataset with paired samples.
-
-        Args:
-            samples (list of tuples): A ;ist of (x, y) pairs
-            representing the dataset samples. """
-        # I've decided to update to a more modern version
-        self.samples = torch.tensor(samples, dtype=torch.float32)
-
-    def __len__(self):
-        """
-        Returns the lenght of the dataset, i.e., the number of samples."""
-
-        return len(self.samples)
-    
-    def __getitem__(self, idx):
-        """
-        Returns the sample pairs corresponding to the given list of indices.
-        Args: indices (list): A list of indices to retrieve samples for.
-        Returns: list: A list of (x, y) pairs corresponding to the specified indices. 
-        """
-        # Split the tensor into input (x) and target (y)
-        x = self.samples[idx, 0]  # First column is input
-        y = self.samples[idx, 1]  # Second column is target
-        return x, y
-
-
-
 # This function computes the loss for the time-dependent Schrödinger equation (TDSE)
-def loss_fun(xyt_train, model, lambda_bc, lambda_ic, V=0, hbar=1, mass=1):
+def loss_fun(train_4d, model, boundary_conditions, initial_conditions):
     """
-    xyt_train: Tensor of shape (N, 4) containing [x, y, z, t].
+    train_4d: Tensor of shape (N, 4) containing [x, y, z, t].
     model: Neural network predicting [Re(Ψ), Im(Ψ)].
     hbar, mass: Physical constants.
     V: Potential function (or precomputed tensor).
     lambda_bc, lambda_ic: Loss weights for BCs/ICs.
     """
+    # Unpack the boundary conditions and the initial conditions. 
+    L = initial_conditions['L']
+    hbar = initial_conditions['hbar']
+    mass = initial_conditions['mass']
+    V = initial_conditions['V']
+    lambda_ic = initial_conditions['lambda_ic']
+    psi_0yzt = initial_conditions['psi_0yzt']
+    psi_Lyzt = initial_conditions['psi_Lyzt']
+    psi_x0zt = initial_conditions['psi_x0zt']
+    psi_xLzt = initial_conditions['psi_xLzt']
+    psi_xy0t = initial_conditions['psi_xy0t']
+    psi_xyLt = initial_conditions['psi_xyLt']
+
+    lambda_bc = boundary_conditions['lambda_bc']
+    u0 = initial_conditions['u0']
+    v0 = initial_conditions['v0']
+
     # Split inputs into spatial and time components
-    x = xyt_train[:, 0:1].requires_grad_(True)
-    y = xyt_train[:, 1:2].requires_grad_(True)
-    z = xyt_train[:, 2:3].requires_grad_(True)
-    t = xyt_train[:, 3:4].requires_grad_(True)
+    x = train_4d[:, 0:1].requires_grad_(True)
+    y = train_4d[:, 1:2].requires_grad_(True)
+    z = train_4d[:, 2:3].requires_grad_(True)
+    t = train_4d[:, 3:4].requires_grad_(True)
     
-    # Forward pass: Predict real and imaginary parts of Ψ
-    psi = model(torch.cat([x, y, z, t], dim=1))
-    psi_real = psi[:, 0:1]
-    psi_imag = psi[:, 1:2]
+    # Forward pass: Predict u (real) and v (imaginary)
+    output = model(torch.cat([x, y, z, t], dim=1))
+    u = output[:, 0:1]  # Real part of Ψ
+    v = output[:, 1:2]  # Imaginary part of Ψ
+
+    # Time derivatives -----------------------------------------------------------------
+    du_dt = torch.autograd.grad(u, t, 
+                              grad_outputs=torch.ones_like(u),
+                              create_graph=True)[0]
+    dv_dt = torch.autograd.grad(v, t,
+                              grad_outputs=torch.ones_like(v),
+                              create_graph=True)[0]
+
+    # Spatial derivatives (Laplacian) --------------------------------------------------
+    # First derivatives for u
+    u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
+    u_y = torch.autograd.grad(u, y, grad_outputs=torch.ones_like(u), create_graph=True)[0]
+    u_z = torch.autograd.grad(u, z, grad_outputs=torch.ones_like(u), create_graph=True)[0]
     
-    # Time derivatives
-    dpsi_real_dt = torch.autograd.grad(psi_real, t, torch.ones_like(psi_real), create_graph=True)[0]
-    dpsi_imag_dt = torch.autograd.grad(psi_imag, t, torch.ones_like(psi_imag), create_graph=True)[0]
+    # Second derivatives for u
+    u_xx = torch.autograd.grad(u_x, x, grad_outputs=torch.ones_like(u_x), create_graph=True)[0]
+    u_yy = torch.autograd.grad(u_y, y, grad_outputs=torch.ones_like(u_y), create_graph=True)[0]
+    u_zz = torch.autograd.grad(u_z, z, grad_outputs=torch.ones_like(u_z), create_graph=True)[0]
+    laplacian_u = u_xx + u_yy + u_zz
+
+    # First derivatives for v
+    v_x = torch.autograd.grad(v, x, grad_outputs=torch.ones_like(v), create_graph=True)[0]
+    v_y = torch.autograd.grad(v, y, grad_outputs=torch.ones_like(v), create_graph=True)[0]
+    v_z = torch.autograd.grad(v, z, grad_outputs=torch.ones_like(v), create_graph=True)[0]
     
-    # Spatial derivatives for Laplacian (Real part)
-    psi_real_x = torch.autograd.grad(psi_real, x, torch.ones_like(psi_real), create_graph=True)[0]
-    psi_real_xx = torch.autograd.grad(psi_real_x, x, torch.ones_like(psi_real_x), create_graph=True)[0]
-    psi_real_y = torch.autograd.grad(psi_real, y, torch.ones_like(psi_real), create_graph=True)[0]
-    psi_real_yy = torch.autograd.grad(psi_real_y, y, torch.ones_like(psi_real_y), create_graph=True)[0]
-    psi_real_z = torch.autograd.grad(psi_real, z, torch.ones_like(psi_real), create_graph=True)[0]
-    psi_real_zz = torch.autograd.grad(psi_real_z, z, torch.ones_like(psi_real_z), create_graph=True)[0]
-    laplacian_real = psi_real_xx + psi_real_yy + psi_real_zz
+    # Second derivatives for v
+    v_xx = torch.autograd.grad(v_x, x, grad_outputs=torch.ones_like(v_x), create_graph=True)[0]
+    v_yy = torch.autograd.grad(v_y, y, grad_outputs=torch.ones_like(v_y), create_graph=True)[0]
+    v_zz = torch.autograd.grad(v_z, z, grad_outputs=torch.ones_like(v_z), create_graph=True)[0]
+    laplacian_v = v_xx + v_yy + v_zz
+
+    # Potential terms ------------------------------------------------------------------
+    V_term_u = V * u  # Real potential term
+    V_term_v = V * v  # Imaginary potential term
+
+    # TDSE Residuals (corrected signs) ------------------------------------------------
+    residual_u = (hbar**2 / (2 * mass)) * laplacian_u - V_term_u - hbar * dv_dt
+    residual_v = (hbar**2 / (2 * mass)) * laplacian_v - V_term_v + hbar * du_dt
     
-    # Spatial derivatives for Laplacian (Imaginary part)
-    psi_imag_x = torch.autograd.grad(psi_imag, x, torch.ones_like(psi_imag), create_graph=True)[0]
-    psi_imag_xx = torch.autograd.grad(psi_imag_x, x, torch.ones_like(psi_imag_x), create_graph=True)[0]
-    psi_imag_y = torch.autograd.grad(psi_imag, y, torch.ones_like(psi_imag), create_graph=True)[0]
-    psi_imag_yy = torch.autograd.grad(psi_imag_y, y, torch.ones_like(psi_imag_y), create_graph=True)[0]
-    psi_imag_z = torch.autograd.grad(psi_imag, z, torch.ones_like(psi_imag), create_graph=True)[0]
-    psi_imag_zz = torch.autograd.grad(psi_imag_z, z, torch.ones_like(psi_imag_z), create_graph=True)[0]
-    laplacian_imag = psi_imag_xx + psi_imag_yy + psi_imag_zz
-    
-    # Potential term (assuming V is precomputed or a function)
-    V_term_real = V * psi_real
-    V_term_imag = V * psi_imag
-    
-    # Compute TDSE residuals
-    residual_real = (hbar**2 / (2 * mass)) * laplacian_real - V_term_real + hbar * dpsi_imag_dt
-    residual_imag = (hbar**2 / (2 * mass)) * laplacian_imag - V_term_imag - hbar * dpsi_real_dt
-    pde_loss = torch.mean(residual_real**2) + torch.mean(residual_imag**2)
-    
-    # Boundary conditions (example: Ψ=0 at spatial boundaries)
+    # PDE loss (mean squared residuals)
+    pde_loss = torch.mean(residual_u**2) + torch.mean(residual_v**2)
+
+    # Boundary conditions (Ψ = 0 at spatial boundaries) -------------------------------
+    # The variable bc_mask is a boolean mask that identifies the boundary points in the domain. 
     bc_mask = (x == 0) | (x == L) | (y == 0) | (y == L) | (z == 0) | (z == L)
-    bc_loss = torch.mean(psi_real[bc_mask]**2) + torch.mean(psi_imag[bc_mask]**2)
-    
-    # Initial condition (Ψ(t=0) = Ψ_0)
+    bc_loss = torch.mean(u[bc_mask]**2) + torch.mean(v[bc_mask]**2)
+
+    # Initial condition (Ψ(t=0) = Ψ_0) ------------------------------------------------
     ic_mask = (t == 0)
-    ic_loss = torch.mean((psi_real[ic_mask] - psi_real_0)**2) + torch.mean((psi_imag[ic_mask] - psi_imag_0)**2)
-    
-    # Total loss
+    ic_loss = torch.mean((u[ic_mask] - u0)**2) + torch.mean((v[ic_mask] - v0)**2)
+
+    # Total loss ----------------------------------------------------------------------
     total_loss = pde_loss + lambda_bc * bc_loss + lambda_ic * ic_loss
     
     return total_loss, pde_loss.item(), bc_loss.item(), ic_loss.item()
 
 
 # Create a function to train the model
-def train_model(model, peda_set, params_set, hparams_set):
-    
-    # Solve item 5.8.1 
-    # Create the model input as in item 5.8.1
-    x_train = torch.linspace(0, 1, 100).reshape(-1, 1).requires_grad_(True)
+def train_model(model, params_set, hparams_set):
     
     # Unpack the parameters
-    Pe_all, Da_all, lambda_b, l2_lambda, eta, num_epochs = params_set.values()
-    input_dim, out_dim, width, depth, activation, initialization = hparams_set.values()
+    L, Number_of_points = params_set.values()
+    input_dim, out_dim, width, depth, activation, initialization, eta, l2_lambda, num_epochs = hparams_set.values()
+        
 
-    # Chose the set of parameters Pe and Da
-    Pe = Pe_all[peda_set]
-    Da = Da_all[peda_set]
+    # This Neuronal Nework use a 4D input, so we need to create a 4D tensor
+    # The input is a tensor of shape (N, 4) where N is the number of points in the domain
+    x_train = torch.linspace(0, L, Number_of_points).reshape(-1, 1).requires_grad_(True)
 
     # Define the optimizer 
     # Adam optimizer with learning rate eta and weight decay l2_lambda
     # Note: weight decay is used for L2 regularization
     # Note: Adam optimizer uses a default L2 regularization.
     optimizer = optim.Adam(model.parameters(), lr=eta, weight_decay=l2_lambda)
-
-    # Create a list to store the models and data
-    outputs = {
-        'General_info': [],
-        'Info': [], 
-        'location': [],
-        'set': peda_set
-    }
-
-    # Create the information for the model
-    about_models = f'Model with activation {activation}, initialization: {initialization}, width: {width}, depth: {depth},\n'
-    about_models+= f'Pe: {Pe}, Da: {Da},\n'
-    about_models+= f'lambda_b: {lambda_b}, Learning rate: {eta}, l2_lambda: {l2_lambda}\n'
-    about_models+= f'Number of epochs: {num_epochs},\n'
-    about_models+= f'Number of parameters: {model.countpar()}\n'
-    about_models+= f'Input dimension: {input_dim}, Output dimension: {out_dim},\n'
-
-    outputs['General_info'] = about_models
-       
-    about_model = f'Parameters: Pe = {Pe}, Da = {Da},\n'
-    outputs['Info'].append(about_model)
-
-    print(f"Training the model with parameters Pe = {Pe}, Da = {Da} ...\n")
-
-    df = pd.DataFrame(columns=['epoch', 'R_int', 'R_bc'])
     
     for epoch in range(num_epochs):
         optimizer.zero_grad() # zero the gradients
