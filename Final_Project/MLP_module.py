@@ -98,23 +98,78 @@ class MLP(nn.Module):
     
     def clear(self):
         self.model.apply(self.init_normal)
+
+
+# Create a function to define the exact solution
+# hbar = m = 1, L = 1
+def exact_solution_example(r, t, L=1, plot=False):
+    # r is a 3D tensor
+    # t is a 1D tensor
+
+    def En(nx, ny, nz):
+        return np.pi**2 * (nx**2 + ny**2 + nz**2) / (2 * L**2)
+    
+    # Ap and Bp are the coefficients of the wave function 
+    # The constraint is that the wave function must be normalized
+    # Ap^2 + Bp^2 = 8/L^3
+    Ap = np.sqrt(5 / L**3)
+    Bp = np.sqrt(3 / L**3)
+
+    # Take for example 
+    nx, ny, nz = [1, 1, 1]
+
+    # And 
+    mx, my, mz = [2, 1, 1]
+
+    # The wave function is a linear combination of the two states
+    x = r[:, 0:1]
+    y = r[:, 1:2]
+    z = r[:, 2:3]
+    t = t*torch.ones_like(x)
+
+    # Contruct a function to compute the sin of multiple variables
+    def msin(x, y, z):
+        return torch.sin(np.pi * x/L) * torch.sin(np.pi * y/L) * torch.sin(np.pi * z/L)
+    
+    def mexp(nx, ny, nz, t):
+        return torch.exp(-1j * En(nx, ny, nz) * t)
+
+    # Construct the wave function
+    values_psi = Ap * msin(x, y, z) * mexp(nx, ny, nz, t) + Bp * msin(2*x, y, z) * mexp(mx, my, mz, t)
+
+    # Plot the exact solution
+    if plot:
+        fig = plt.figure(figsize=(10, 5))
+        ax1, ax2 = fig.subplots(1, 2)
+
+        ax1.plot(values_psi.real, color = 'dodgerblue', label='Real part')
+        ax1.legend(loc = 'upper right')
+        ax2.plot(values_psi.imag, color = 'crimson', label='Imaginary part')
+        ax2.legend(loc = 'upper right')
+        plt.show()
+    
+    return values_psi
     
 
 # This function computes the loss for the time-dependent Schrödinger equation (TDSE)
-def loss_fun(train_4d, model, boundary_conditions, initial_conditions):
+# Define a placeholder for the loss function (if needed, implement it here or use the global one)
+def loss_fun(timeq, model, boundary_conditions, initial_conditions):
     """
-    train_4d: Tensor of shape (N, 4) containing [x, y, z, t].
-    model: Neural network predicting [Re(Ψ), Im(Ψ)].
+    Neural network predicting [Re(Ψ), Im(Ψ)].
     hbar, mass: Physical constants.
     V: Potential function (or precomputed tensor).
     lambda_bc, lambda_ic: Loss weights for BCs/ICs.
     """
     # Unpack the boundary conditions and the initial conditions. 
-    L = initial_conditions['L']
-    hbar = initial_conditions['hbar']
     mass = initial_conditions['mass']
-    V = initial_conditions['V']
+    hbar = initial_conditions['hbar']
+    
     lambda_ic = initial_conditions['lambda_ic']
+
+    L = initial_conditions['L'] # The length of the box
+    V = initial_conditions['V'] # Potential function (or precomputed tensor)
+    N = initial_conditions['N'] # Number of points in the domain
+    
     psi_0yzt = initial_conditions['psi_0yzt']
     psi_Lyzt = initial_conditions['psi_Lyzt']
     psi_x0zt = initial_conditions['psi_x0zt']
@@ -122,18 +177,24 @@ def loss_fun(train_4d, model, boundary_conditions, initial_conditions):
     psi_xy0t = initial_conditions['psi_xy0t']
     psi_xyLt = initial_conditions['psi_xyLt']
 
-    lambda_bc = boundary_conditions['lambda_bc']
-    u0 = initial_conditions['u0']
-    v0 = initial_conditions['v0']
-
+    # Unpack the boundary conditions
+    lambda_bc = boundary_conditions['lambda_bc'] # Weight for boundary conditions
+    u0 = boundary_conditions['u0'] # Boundary conditions for the real part of Ψ
+    v0 = boundary_conditions['v0'] # Boundary conditions for the imaginary part of Ψ
+    
     # Split inputs into spatial and time components
-    x = train_4d[:, 0:1].requires_grad_(True)
-    y = train_4d[:, 1:2].requires_grad_(True)
-    z = train_4d[:, 2:3].requires_grad_(True)
-    t = train_4d[:, 3:4].requires_grad_(True)
+    # Supose a perfect box of lenght L 
+    space = torch.linspace(0, L, N).reshape(-1, 1)  # Spatial coordinates
+
+    x = space[:, 0:1].requires_grad_(True)  # Spatial x coordinates
+    y = space[:, 0:1].requires_grad_(True)  # Spatial y coordinates
+    z = space[:, 0:1].requires_grad_(True)  # Spatial z coordinates
+    t = timeq*torch.ones_like(x).requires_grad_(True)  # Time is constant for the batch
     
     # Forward pass: Predict u (real) and v (imaginary)
-    output = model(torch.cat([x, y, z, t], dim=1))
+    output = model(torch.cat([x, y, z, t], dim=1))  # Create a grid of points in the domain
+
+    # Split the output into real and imaginary parts
     u = output[:, 0:1]  # Real part of Ψ
     v = output[:, 1:2]  # Imaginary part of Ψ
 
@@ -195,16 +256,14 @@ def loss_fun(train_4d, model, boundary_conditions, initial_conditions):
 
 
 # Create a function to train the model
-def train_model(model, params_set, hparams_set):
+def train_model(model, params_set):
     
     # Unpack the parameters
-    L, Number_of_points = params_set.values()
-    input_dim, out_dim, width, depth, activation, initialization, eta, l2_lambda, num_epochs = hparams_set.values()
+    L, Number_of_points, BCs, ICs, eta, l2_lambda, num_epochs = params_set.values()
         
-
     # This Neuronal Nework use a 4D input, so we need to create a 4D tensor
     # The input is a tensor of shape (N, 4) where N is the number of points in the domain
-    x_train = torch.linspace(0, L, Number_of_points).reshape(-1, 1).requires_grad_(True)
+    train_r = torch.linspace(0, L, Number_of_points).reshape(-1, 1).requires_grad_(True)
 
     # Define the optimizer 
     # Adam optimizer with learning rate eta and weight decay l2_lambda
@@ -215,108 +274,14 @@ def train_model(model, params_set, hparams_set):
     for epoch in range(num_epochs):
         optimizer.zero_grad() # zero the gradients
         # Compute the interior and boundary losses
-        loss, interior_loss, boundary_loss = loss_fun(x_train, model, Pe, Da, lambda_b)
+        loss, pde_loss, boundary_loss, ic_loss = loss_fun(0, model, BCs, ICs)
         loss.backward() # backpropagation
         optimizer.step() # update the weights
       
-        # Store the losses
-        df.loc[(epoch+1)] = [(epoch+1), interior_loss, boundary_loss]
+        # Print the losses every 100 epochs
+        if (epoch+1) % 100 == 0:
+            print(f"Epoch {epoch+1}: Function Loss: {pde_loss}, Boundary Loss: {boundary_loss}, Initial_cond_loss: {ic_loss}, Total Loss: {loss}")
 
-        # Print the losses every 1000 epochs
-        if (epoch+1) % 5000 == 0:
-            print(f"Epoch {epoch+1}: Interior Loss: {interior_loss}, Boundary Loss: {boundary_loss}, Total Loss: {loss.item()}")
-            # Save the model every 5000 epochs
-
-    # Save the model loss
-    filetext = f"models/model_item1_Pe_{Pe}_Da_{Da}.csv"
-    df.to_csv(filetext, index=False) 
-    outputs['location'] = filetext
 
     # Print the final output results.
     print("Training completed.\n")
-        
-    return outputs
-
-
-# Working on 5.8.4
-# Plot the losses for each combination of Pe and Da
-def plotter(model, inputs_from_train, params_set, data_model_location, info = False):
-    """ Plot the losses for each combination of Pe and Da.
-    Args:
-        model (MLP): The trained MLP model.
-        inputs_from_train (dict): Dictionary containing the outputs from the training function.
-    """
-    
-    # Unpack the parameters
-    ginfo, info, location, peda_set = inputs_from_train.values()
-    Pe_all, Da_all, lambda_b, l2_lambda, eta, num_epochs = params_set.values()
-
-    # Define a function to extract more information from the model. (Optional)
-    if info:
-        # Print the general information about the model
-        print(ginfo)
-        # Print the information about the model
-        print(info)
-        # Print the location of the model
-        print(location)
-        # Print the l2 penalty
-        print(f"l2_lambda: {l2_lambda}")
-
-    # Adjust for the parameter set 
-    Pe = Pe_all[peda_set]
-    Da = Da_all[peda_set]
-
-
-    # Load the data from the files
-    data = pd.read_csv(data_model_location, sep='\s', header=None)
-
-    losses = pd.read_csv(location)
-
-    boundary_losses = losses['R_bc'].to_numpy()
-    interior_losses = losses['R_int'].to_numpy()
-
-    model.eval()
-
-    # Build x_test correctly as shape [N,1]
-    x_np   = data[0].to_numpy().reshape(-1, 1)
-    x_test = torch.tensor(x_np, dtype=torch.float32)
-
-    # (If using GPU:)
-    # device = next(model_item1.parameters()).device
-    # x_test = x_test.to(device)
-
-    with torch.no_grad():
-        u_pred = model(x_test).cpu().numpy().reshape(-1)
-
-    # calculate the norm for the errors
-    error = np.linalg.norm(u_pred - data[1].to_numpy(), 2) / np.linalg.norm(data[1].to_numpy(), 2)
-
-    # Plot the losses and the predictions
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
-    fig.suptitle(f'solution of $u$ using PINN for Pe={Pe}, Da={Da}, $\lambda_b$ = {lambda_b}, $\eta$ = {eta}', fontsize=16)
-
-    # Plot the solution
-    ax1.plot(data[0], data[1], '--', lw = 4, label='Target', color='crimson')
-    ax1.plot(data[0], u_pred, lw = 2, label='NN Solution', color='dodgerblue')
-    ax1.plot(0,0, 'o', lw = 0, label='Error: {:.2e}'.format(error), color='black')
-    ax1.legend()
-    ax1.set_ylim([0, 1.02])
-    ax1.set_xlim([0, 1])
-    ax1.grid()
-    ax1.set_xlabel('$x$')
-    ax1.set_ylabel('$u(x)$')
-    ax1.set_title('NN Solution vs Target')   
-
-
-    # Plot the losses
-    ax2.semilogy(interior_losses, label=f'Interior Loss, Pe={Pe}, Da={Da}')
-    ax2.semilogy(boundary_losses, label=f'Boundary Loss, Pe={Pe}, Da={Da}')
-    ax2.legend()
-    ax2.set_ylim([1e-15, 1e5])
-    ax2.set_xlim([0, num_epochs])
-    ax2.grid()
-    ax2.set_xlabel('Epochs')
-    ax2.set_ylabel('Loss')
-    ax2.set_title('Losses vs Epochs')   
-
-    plt.show()
