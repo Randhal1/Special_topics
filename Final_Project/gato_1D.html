@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>1D Time-Dependent Schrödinger Equation: Infinite Well</title>
+  <script>
+    MathJax = { tex: { inlineMath: [['$','$'], ['\\(','\\)']] } };
+  </script>
+  <script async
+    src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+  </script>
+  <style>
+    body { font-family: sans-serif; margin: 2em; line-height: 1.4; }
+    h1, h2 { color: #003366; }
+    .equation { margin: 1em 0; }
+  </style>
+</head>
+<body>
+
+  <h1>1D Time-Dependent Schrödinger Equation<br>Infinite Square Well</h1>
+
+  <h2>Equation</h2>
+  <div class="equation">
+    $$
+      i\hbar\,\frac{\partial \psi(x,t)}{\partial t}
+      \;=\;
+      -\frac{\hbar^2}{2m}\,\frac{\partial^2 \psi(x,t)}{\partial x^2}
+      \quad
+      (0 < x < L)
+    $$
+  </div>
+
+  <h2>Boundary &amp; Initial Conditions</h2>
+  <ul>
+    <li>$\psi(0,t)=0,\;\psi(L,t)=0$</li>
+    <li>At $t=0$: $\psi(x,0)=A\,\sin\bigl(\tfrac{n\pi x}{L}\bigr)$</li>
+  </ul>
+
+  <h2>Exact Solution</h2>
+  <div class="equation">
+    $$
+      \psi(x,t)
+      = A\,
+      \sin\!\Bigl(\frac{n\pi x}{L}\Bigr)
+      \,\exp\!\Bigl(-\,\frac{i\,E_n\,t}{\hbar}\Bigr)
+    $$
+  </div>
+  <p>with energy levels</p>
+  <div class="equation">
+    $$
+      E_n
+      = \frac{n^2\pi^2\hbar^2}{2m\,L^2}
+      ,\quad n=1,2,3,\dots
+    $$
+  </div>
+
+  <p>This solution satisfies the PDE, vanishes at the walls, and matches the initial sine‐mode at $t=0$.</p>
+
+</body>
+</html>
