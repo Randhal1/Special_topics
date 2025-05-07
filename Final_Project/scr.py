@@ -8,36 +8,53 @@ import matplotlib.pyplot as plt
 
 # Define constants of the equation in natural units
 hbar = 1.0
-m = 1.0
-L = 1.0
-T = 1.0
+m    = 1.0
+L    = 1.0
+T    = 1.0
+
+# --- SIREN layer definition ---
+class SirenLayer(nn.Module):
+    def __init__(self, in_features, out_features,
+                 bias=True, is_first=False,
+                 w0=30.0, c=6.0):
+        super().__init__()
+        self.in_features = in_features
+        self.linear = nn.Linear(in_features, out_features, bias=bias)
+        self.w0 = w0
+        self.is_first = is_first
+        # weight init
+        with torch.no_grad():
+            if self.is_first:
+                bound = 1.0 / in_features
+            else:
+                bound = np.sqrt(c / in_features) / w0
+            self.linear.weight.uniform_(-bound, bound)
+
+    def forward(self, x):
+        return torch.sin(self.w0 * self.linear(x))
 
 # Define the Schrodinger equation which inherits from nn.Module
 class SchrodingerPINN1D(nn.Module):
     def __init__(self, layers):
         super().__init__()
-        self.layers = nn.ModuleList()
-        for i in range(len(layers)-1):
-            self.layers.append(nn.Linear(layers[i], layers[i+1]))
-        self.activation = nn.Tanh()
-        for m in self.layers:
-            if isinstance(m, nn.Linear):
-                # Use Xavier initialization, which is good for the Tanh activation function
-                # Xavier initialization is the best choice for the Schrodinger equation
-                # because it helps to keep the variance of the activations constant
-                nn.init.xavier_normal_(m.weight) 
-                nn.init.zeros_(m.bias)
+        # layers is a list of dimensions, e.g. [2,128,128,2]
+        self.net = nn.ModuleList()
+        # first SIREN layer
+        self.net.append(SirenLayer(layers[0], layers[1], is_first=True, w0=30.0))
+        # hidden SIREN layers
+        for i in range(1, len(layers)-2):
+            self.net.append(SirenLayer(layers[i], layers[i+1], is_first=False, w0=1.0))
+        # final linear head (no sine activation)
+        self.net.append(nn.Linear(layers[-2], layers[-1]))
 
-    # Do the forward pass
-    # The input is a concatenation of x and t
     def forward(self, x, t):
-        X = torch.cat([x, t], dim=1)
-        u = X
-        for layer in self.layers[:-1]:
-            u = self.activation(layer(u))
-        return self.layers[-1](u)
-    
-    # Returns the number of parameters in the model
+        # concatenate inputs
+        xt = torch.cat([x, t], dim=1)
+        y = xt
+        for layer in self.net:
+            y = layer(y)
+        return y
+
     def countpar(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
@@ -51,17 +68,19 @@ def schrodinger_residual(model, x, t):
     t = t.clone().detach().requires_grad_(True)
     psi = model(x, t)
     psi_r, psi_i = psi[:,0:1], psi[:,1:2]
+    # time derivatives
     psi_r_t = autograd.grad(psi_r, t, torch.ones_like(psi_r), create_graph=True)[0]
     psi_i_t = autograd.grad(psi_i, t, torch.ones_like(psi_i), create_graph=True)[0]
-    psi_r_x = autograd.grad(psi_r, x, torch.ones_like(psi_r), create_graph=True)[0]
+    # spatial derivatives
+    psi_r_x  = autograd.grad(psi_r, x, torch.ones_like(psi_r), create_graph=True)[0]
+    psi_i_x  = autograd.grad(psi_i, x, torch.ones_like(psi_i), create_graph=True)[0]
     psi_r_xx = autograd.grad(psi_r_x, x, torch.ones_like(psi_r_x), create_graph=True)[0]
-    psi_i_x = autograd.grad(psi_i, x, torch.ones_like(psi_i), create_graph=True)[0]
     psi_i_xx = autograd.grad(psi_i_x, x, torch.ones_like(psi_i_x), create_graph=True)[0]
-    V = V_func(x)
-    res_r =  hbar * psi_i_t + (hbar**2/(2*m)) * psi_r_xx - V * psi_r
-    res_i = -hbar * psi_r_t + (hbar**2/(2*m)) * psi_i_xx - V * psi_i
-    return res_r, res_i
-
+    # real and imaginary residuals
+    # i*hbar*psi_t + (hbar^2/2m)*psi_xx - V(x)*psi
+    r_r = - hbar * psi_i_t + (hbar**2/(2*m)) * psi_r_xx - V_func(x)*psi_r
+    r_i =   hbar * psi_r_t + (hbar**2/(2*m)) * psi_i_xx - V_func(x)*psi_i
+    return r_r, r_i
 
 # Define the function to sample the domain
 def sample_domain(N):
@@ -82,9 +101,7 @@ def sample_boundary(N):
     xL = torch.full((N,1), L)
     return x0, t0, xL, t0
 
-
 # Create a function to train the model
-# This model inbuits the optimizer and the loss function
 def train(model, params, psi_0):
 
     # Import the parameters for the training
@@ -94,14 +111,19 @@ def train(model, params, psi_0):
     eta = params['eta']
     l2_lambda = params['l2_lambda']
 
-
     # Define the optimizer Adam for the general training
     # Adam optimizer with learning rate eta and weight decay l2_lambda
     # Note: weight decay is used for L2 regularization
     # Note: Adam optimizer uses a default L2 regularization.
     optimizer = optim.Adam(model.parameters(), lr=eta, weight_decay=l2_lambda)
 
-    # Store the losses.
+    # Prepare fixed collocation/IC/BC sets
+    x_r, t_r       = sample_domain(int( params.get('collocation_pts',20000) ))
+    x_i_full, t_i_full = sample_initial(int( params.get('ic_pts',5000) ))
+    x0, t0, xL, tL = sample_boundary(int( params.get('bc_pts',5000) ))
+    x_r.requires_grad_(True)
+    t_r.requires_grad_(True)
+
     losses = {
         'loss': [],
         'loss_pde': [],
@@ -109,100 +131,73 @@ def train(model, params, psi_0):
         'loss_bc': []
     }
 
-
-    # Stage 1: Adam optimization
-    print("Stage 1: Adam optimization")
-
+    # Adam training phase
     for epoch in range(1, epochs+1):
+        # Sample mini-batches from fixed sets
+        idx_r = torch.randperm(x_r.size(0))[:2000]
+        xr, tr = x_r[idx_r], t_r[idx_r]
+        idx_i = torch.randperm(x_i_full.size(0))[:1000]
+        xi, ti = x_i_full[idx_i], t_i_full[idx_i]
+        idx_b = torch.randperm(x0.size(0))[:1000]
+        x0_b, t0_b = x0[idx_b], t0[idx_b]
+        xL_b, tL_b = xL[idx_b], tL[idx_b]
 
-        #optimizer.zero_grad()
-        # Sample the domain, initial conditions and boundary conditions
-        x_r, t_r = sample_domain(2000)
-        
         # Compute the residual of the PDE
-        res_r, res_i = schrodinger_residual(model, x_r, t_r)
-
-        # Compute the PDE loss
+        res_r, res_i = schrodinger_residual(model, xr, tr)
         loss_pde = (res_r**2 + res_i**2).mean()
-        # Sample the initial condition
-        x_i, t_i = sample_initial(1000)
-        x0, t0, xL, tL = sample_boundary(1000)     
         
         # Compute the initial condition loss
-        pred0 = model(x_i, t_i)
-        psi0 = psi_0(x_i)
-        loss_ic = ((pred0[:,0:1] - psi0)**2 + pred0[:,1:2]**2).mean()
+        pred0 = model(xi, ti)
+        psi0_vals = psi_0(xi)
+        loss_ic = ((pred0[:,0:1] - psi0_vals)**2 + pred0[:,1:2]**2).mean()
         
         # Compute the boundary condition loss
-        p0 = model(x0, t0); pL = model(xL, tL)
+        p0 = model(x0_b, t0_b); pL = model(xL_b, tL_b)
         loss_bc = (p0**2 + pL**2).mean()
+
         
         # Compute the total loss
         # Lambda_ic and Lambda_bc are the weights for the initial and boundary conditions
         # After some tests, I found that 10 is a good value for both
         loss = loss_pde + 10*loss_ic + 10*loss_bc
-        optimizer.zero_grad(); loss.backward(); optimizer.step()
 
         # Store the losses
         losses['loss'].append(loss.item())
         losses['loss_pde'].append(loss_pde.item())
         losses['loss_ic'].append(10*loss_ic.item())
         losses['loss_bc'].append(10*loss_bc.item())
-        
-        # Print the loss every 500 epochs
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
         if epoch % 500 == 0:
-            print(f"Epoch {epoch}, Loss: {loss.item():.2e}, PDE Loss: {loss_pde.item():.2e}, IC Loss: {loss_ic.item():.2e}, BC Loss: {loss_bc.item():.2e}")
+            print(f"Epoch {epoch}, Loss: {loss.item():.2e}, PDE: {loss_pde.item():.2e}, IC: {loss_ic.item():.2e}, BC: {loss_bc.item():.2e}")
 
-    print("Stage 1: Adam optimization finished. \n\nStage 2: LBFGS optimization.") 
-
-    # Stage 2: LBFGS optimization
-    # The strong Wolfe line search is used to find the optimal step size
-    fine_opt = optim.LBFGS(model.parameters(), max_iter=max_iter_lb, history_size=10, tolerance_grad=1e-9, tolerance_change=1e-12, line_search_fn='strong_wolfe')
+    # Fine-tuning with L-BFGS
+    lbfgs_opt = optim.LBFGS(model.parameters(), lr=1.0, max_iter=max_iter_lb,
+                             tolerance_grad=1e-9, tolerance_change=1e-12,
+                             line_search_fn='strong_wolfe')
 
     def closure():
-        fine_opt.zero_grad()
-        # Sample the domain, initial conditions and boundary conditions
-        x_r, t_r = sample_domain(2000)
-        
-        # Compute the residual of the PDE
-        res_r, res_i = schrodinger_residual(model, x_r, t_r)
-
-        # Compute the PDE loss
-        loss_pde = (res_r**2 + res_i**2).mean()
-        # Sample the initial condition
-        x_i, t_i = sample_initial(1000)
-        x0, t0, xL, tL = sample_boundary(1000)     
-        
-        # Compute the initial condition loss
-        pred0 = model(x_i, t_i)
-        psi0 = psi_0(x_i)
-        loss_ic = ((pred0[:,0:1] - psi0)**2 + pred0[:,1:2]**2).mean()
-        
-        # Compute the boundary condition loss
-        p0 = model(x0, t0); pL = model(xL, tL)
-        loss_bc = (p0**2 + pL**2).mean()
-        
-        # Compute the total loss
-        loss = loss_pde + 10*loss_ic + 10*loss_bc
-
         # Store the losses
-        losses['loss'].append(loss.item())
-        losses['loss_pde'].append(loss_pde.item())
-        losses['loss_ic'].append(10*loss_ic.item())
-        losses['loss_bc'].append(10*loss_bc.item())
-
+        lbfgs_opt.zero_grad()
+        res_r, res_i = schrodinger_residual(model, x_r, t_r)
+        loss_pde = (res_r**2 + res_i**2).mean()
+        pred0 = model(x_i_full, t_i_full)
+        psi0_vals = psi_0(x_i_full)
+        loss_ic  = ((pred0[:,0:1] - psi0_vals)**2 + pred0[:,1:2]**2).mean()
+        p0, pL = model(x0, t0), model(xL, tL)
+        loss_bc  = (p0**2 + pL**2).mean()
+        loss = loss_pde + 10*loss_ic + 10*loss_bc
         loss.backward()
-        
         return loss
 
-    # Run the LBFGS optimizer
-    for i in range(max_iter_lb):
-        final_loss = fine_opt.step(closure)
-        if i % 500 == 0:
-            print(f"Final loss: {final_loss:.2e}, PDE Loss: {loss_pde.item():.2e}, IC Loss: {loss_ic.item():.2e}, BC Loss: {loss_bc.item():.2e}")
-        
-    return losses, epoch+max_iter_lb
+    print("Starting L-BFGS fine-tuning…")
+    final_loss = lbfgs_opt.step(closure)
+    print(f"[L-BFGS] Final Loss: {final_loss.item():.2e}")
 
+    return losses, epoch+max_iter_lb
 
 # Define a function to compute the exact solution
 def psi_exact(x_plot, t_plot, L = 1, n=1):
@@ -210,9 +205,9 @@ def psi_exact(x_plot, t_plot, L = 1, n=1):
     E1 = (n**2 * np.pi**2 * hbar**2)/(2*m*L**2)
     return np.sqrt(2/L) * np.sin(n*np.pi * x_plot.numpy() / L) * np.exp(-1j*E1*t_plot)
 
-
+# Function to plot the results (unchanged)
 # Create a function to plot the results
-def plot_results(t_plot, x_plot, model, losses, epochs, nl = 1, exact_sol = None):
+def plot_results(t_plot, x_plot, model, losses, epochs, nl = 1):
 
     # 1000 points in the x direction
     n = 1000
@@ -228,11 +223,7 @@ def plot_results(t_plot, x_plot, model, losses, epochs, nl = 1, exact_sol = None
     psi_i_pred = pred[:,1]
 
     # Exact infinite-well n=1
-    if exact_sol:
-        veritas = exact_sol(x_plot, t_plot)
-    else:
-        veritas = psi_exact(x_plot, t_plot, n=nl)
-
+    veritas = psi_exact(x_plot, t_plot, n=nl)
     psi_r_ex = np.real(veritas).flatten()
     psi_i_ex = np.imag(veritas).flatten()
 
@@ -272,3 +263,4 @@ def plot_results(t_plot, x_plot, model, losses, epochs, nl = 1, exact_sol = None
     ax3.set_yscale('log')
     
     plt.show()
+
